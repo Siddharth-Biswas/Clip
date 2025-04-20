@@ -8,3 +8,4 @@ torchvision==0.17.2
 torchaudio==2.2.2
 openpyxl
 huggingface_hub[hf_xet]
+git+https://github.com/openai/CLIP.git
