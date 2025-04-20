@@ -64,11 +64,11 @@ if uploaded_file:
     else:
         n_clusters = st.slider("Number of clusters", min_value=2, max_value=20, value=10)
 
-       if "df_clustered" not in st.session_state and st.button("Run Clustering"):
-    with st.spinner("Clustering product titles..."):
-        labels, _ = cluster_titles(df["title"].tolist(), n_clusters)
-        df["cluster"] = labels
-        st.session_state.df_clustered = df  # Save to session
+        if "df_clustered" not in st.session_state and st.button("Run Clustering"):
+            with st.spinner("Clustering product titles..."):
+                labels, _ = cluster_titles(df["title"].tolist(), n_clusters)
+                df["cluster"] = labels
+                st.session_state.df_clustered = df  # Save to session
 
 # If clustering was done
 if "df_clustered" in st.session_state:
