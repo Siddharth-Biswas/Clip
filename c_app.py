@@ -64,33 +64,39 @@ if uploaded_file:
     else:
         n_clusters = st.slider("Number of clusters", min_value=2, max_value=20, value=10)
 
-        if st.button("Run Clustering"):
-            with st.spinner("Clustering product titles..."):
-                labels, _ = cluster_titles(df["title"].tolist(), n_clusters)
-                df["cluster"] = labels
+       if "df_clustered" not in st.session_state and st.button("Run Clustering"):
+    with st.spinner("Clustering product titles..."):
+        labels, _ = cluster_titles(df["title"].tolist(), n_clusters)
+        df["cluster"] = labels
+        st.session_state.df_clustered = df  # Save to session
 
-            mapping_file = st.file_uploader("Upload rules file to rename clusters (CSV with columns: cluster,label)", type=["csv"])
-            
-            if mapping_file:
-                try:
-                    rules_df = pd.read_csv(mapping_file)
-                    cluster_to_label = dict(zip(rules_df["cluster"], rules_df["label"]))
-                    df["label"] = df["cluster"].map(cluster_to_label).fillna(df["cluster"])
-                    st.success("Applied label mapping from rules file.")
-                except Exception as e:
-                    st.warning(f"Error processing rules file: {e}")
-                    df["label"] = df["cluster"]
-            else:
-                df["label"] = df["cluster"]
-                st.info("No rules file uploaded. Using cluster numbers as labels.")
+# If clustering was done
+if "df_clustered" in st.session_state:
+    df = st.session_state.df_clustered
 
-            if st.button("Classify Images"):
-                label_names = sorted(df["label"].astype(str).unique().tolist())
-                df["image_label"] = classify_images_with_clip(df, clip_model, preprocess, label_names)
-                st.success("Image classification complete.")
+    mapping_file = st.file_uploader("Upload rules file to rename clusters (CSV with columns: cluster,label)", type=["csv"])
+    
+    if mapping_file:
+        try:
+            rules_df = pd.read_csv(mapping_file)
+            cluster_to_label = dict(zip(rules_df["cluster"], rules_df["label"]))
+            df["label"] = df["cluster"].map(cluster_to_label).fillna(df["cluster"])
+            st.session_state.df_labeled = df
+            st.success("Applied label mapping from rules file.")
+        except Exception as e:
+            st.warning(f"Error processing rules file: {e}")
+            df["label"] = df["cluster"]
+    else:
+        df["label"] = df["cluster"]
+        st.info("No rules file uploaded. Using cluster numbers as labels.")
 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_file:
-                    df.to_csv(tmp_file.name, index=False)
-                    st.download_button("Download Classified CSV", tmp_file.name, file_name="classified_products.csv")
+    if st.button("Classify Images"):
+        label_names = sorted(df["label"].astype(str).unique().tolist())
+        df["image_label"] = classify_images_with_clip(df, clip_model, preprocess, label_names)
+        st.success("Image classification complete.")
 
-                st.dataframe(df.head(20))
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_file:
+            df.to_csv(tmp_file.name, index=False)
+            st.download_button("Download Classified CSV", tmp_file.name, file_name="classified_products.csv")
+
+        st.dataframe(df.head(20))
