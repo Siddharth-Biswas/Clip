@@ -3,13 +3,13 @@ import pandas as pd
 import torch
 import clip
 from PIL import Image
+import io
 from sklearn.cluster import KMeans
 from sentence_transformers import SentenceTransformer
-import tempfile
-import io  # For handling image URLs
 
 st.set_page_config(layout="wide")
-st.title("Product Classifier using CLIP and Title Clustering")
+st.title("Product Classifier")
+
 
 @st.cache_resource
 def load_models():
@@ -17,13 +17,16 @@ def load_models():
     clip_model, preprocess = clip.load("ViT-B/32", device="cpu")
     return model, clip_model, preprocess
 
+
 sentence_model, clip_model, preprocess = load_models()
+
 
 def cluster_titles(titles, n_clusters=10):
     embeddings = sentence_model.encode(titles, show_progress_bar=True)
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10) # Added n_init for stability
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     labels = kmeans.fit_predict(embeddings)
     return labels, kmeans
+
 
 def classify_images_with_clip(df, clip_model, preprocess, label_names):
     device = "cpu"
@@ -37,7 +40,6 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names):
         for index, row in df.iterrows():
             try:
                 image_url = row["IMAGE_URL"]
-                # Try to open image from URL
                 try:
                     response = st.session_state.requests.get(image_url, stream=True)
                     response.raise_for_status()
@@ -56,81 +58,163 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names):
                 image_features /= image_features.norm(dim=-1, keepdim=True)
                 text_features /= text_features.norm(dim=-1, keepdim=True)
 
-                similarity = (100.0 * image_features @ text_features.T).squeeze(0).cpu().numpy()
+                similarity = (
+                    100.0 * image_features @ text_features.T
+                ).squeeze(0).cpu().numpy()
                 predicted_label = label_names[similarity.argmax()]
             except Exception as e:
                 predicted_label = f"Error: {e}"
             results.append(predicted_label)
     return results
 
-st.info("Upload your product data in CSV or XLSX format with 'TITLE' and 'IMAGE_URL' columns.")
 
-uploaded_file = st.file_uploader("Upload product data (.csv or .xlsx)", type=["csv", "xlsx"])
+def load_rules(rules_file):
+    rules_df = pd.read_csv(rules_file)
+    if "Rule" not in rules_df.columns or "Node" not in rules_df.columns:
+        st.error("Rules file must contain 'Rule' and 'Node' columns.")
+        return None
+    return rules_df
 
-if uploaded_file:
-    # Load DataFrame
-    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
 
-    if "TITLE" not in df.columns or "IMAGE_URL" not in df.columns:
-        st.error("CSV/XLSX must contain 'TITLE' and 'IMAGE_URL' columns.")
+def apply_rule(title, rule, rules_df):
+    if not isinstance(rule, str) or rule == "Unclassified":
+        return "Unclassified"
+
+    if rules_df is None or rule not in rules_df["Rule"].values:
+        return "Unclassified"
+
+    rule_row = rules_df[rules_df["Rule"] == rule].iloc[0]  # Get the first row
+
+    include_keywords = (
+        str(rule_row["Include"]).lower().split(" or ")
+        if pd.notna(rule_row["Include"])
+        else []
+    )
+    exclude_keywords = (
+        str(rule_row["Exclude"]).lower().split(" and ")
+        if pd.notna(rule_row["Exclude"])
+        else []
+    )
+
+    title_lower = title.lower()
+    include_match = all(
+        keyword.strip() in title_lower for keyword in include_keywords if keyword.strip()
+    )
+    exclude_match = not any(
+        keyword.strip() in title_lower for keyword in exclude_keywords if keyword.strip()
+    )
+
+    if include_match and exclude_match:
+        return str(rule_row["Node"])
     else:
-        n_clusters = st.slider("Number of clusters", min_value=2, max_value=20, value=10)
+        return "Unclassified"
 
-        if "df_clustered" not in st.session_state and st.button("Run Title Clustering"):
-            with st.spinner("Clustering product titles..."):
-                labels, kmeans_model = cluster_titles(df["TITLE"].tolist(), n_clusters)
-                df["cluster"] = labels
-                st.session_state.df_clustered = df
-                st.session_state.kmeans_model = kmeans_model # Save the model if you want to inspect clusters
 
-        if "df_clustered" in st.session_state:
-            df = st.session_state.df_clustered
+# Streamlit App
+uploaded_file = st.file_uploader("Upload product data (.csv or .xlsx)", type=["csv", "xlsx"])
+rules_file = st.file_uploader("Upload rules file (CSV)", type=["csv"])
 
-            st.subheader("Initial Clusters")
-            cluster_counts = df["cluster"].value_counts().sort_index()
-            st.write(f"Number of clusters: {len(cluster_counts)}")
-            for cluster_id in sorted(df["cluster"].unique()):
-                st.write(f"**Cluster {cluster_id}:**")
-                st.write(df[df["cluster"] == cluster_id]["TITLE"].head().tolist()) # Show a few titles per cluster
+if uploaded_file and rules_file:
+    try:
+        df = (
+            pd.read_csv(uploaded_file)
+            if uploaded_file.name.endswith(".csv")
+            else pd.read_excel(uploaded_file)
+        )
+        rules_df = load_rules(rules_file)
 
-            st.markdown("---")
-            st.subheader("Optional: Rename Clusters using a Rules File")
-            st.markdown("Upload a CSV file with columns 'cluster' (integer cluster ID) and 'label' (desired new label).")
-            st.markdown("Example rules file: `cluster,label`\\n`0,Electronics`\\n`1,Apparel`")
-            mapping_file = st.file_uploader("Upload rules file (CSV)", type=["csv"])
-
-            if mapping_file:
-                try:
-                    rules_df = pd.read_csv(mapping_file)
-                    if "cluster" not in rules_df.columns or "label" not in rules_df.columns:
-                        st.error("Rules file must contain 'cluster' and 'label' columns.")
-                    else:
-                        cluster_to_label = dict(zip(rules_df["cluster"], rules_df["label"]))
-                        df["mapped_label"] = df["cluster"].map(cluster_to_label).fillna(df["cluster"].astype(str))
-                        st.session_state.df_labeled = df
-                        st.success("Applied label mapping from rules file.")
-                except Exception as e:
-                    st.warning(f"Error processing rules file: {e}")
-                    df["mapped_label"] = df["cluster"].astype(str)
+        if rules_df is not None:  # Proceed only if rules file is loaded correctly
+            if "TITLE" not in df.columns or "IMAGE_URL" not in df.columns:
+                st.error("Data must contain TITLE and IMAGE_URL columns.")
             else:
-                df["mapped_label"] = df["cluster"].astype(str)
-                st.info("No rules file uploaded. Using cluster numbers as labels.")
-
-            if st.button("Classify Images"):
-                # Initialize requests in session state if it's not already there
+                # Initialize requests in session state
                 if "requests" not in st.session_state:
                     import requests
-                    st.session_state["requests"] = requests
 
-                label_names = sorted(df["mapped_label"].unique().tolist())
-                df["clip_label"] = classify_images_with_clip(df, clip_model, preprocess, label_names)
-                st.session_state.df_classified = df
-                st.success("Image classification complete.")
+                    st.session_state.requests = requests
 
-            if "df_classified" in st.session_state:
-                st.subheader("Classification Results")
-                st.dataframe(st.session_state.df_classified.head(20))
+                n_clusters = st.slider("Number of clusters", min_value=2, max_value=20, value=10)
 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_file:
-                    st.session_state.df_classified.to_csv(tmp_file.name, index=False)
-                    st.download_button("Download Classified CSV", tmp_file.name, file_name="classified_products.csv")
+                if "df_clustered" not in st.session_state and st.button(
+                    "Run Title Clustering"
+                ):
+                    with st.spinner("Clustering product titles..."):
+                        labels, kmeans_model = cluster_titles(
+                            df["TITLE"].tolist(), n_clusters
+                        )
+                        df["cluster"] = labels
+                        st.session_state.df_clustered = df
+                        st.session_state.kmeans_model = kmeans_model
+
+                if "df_clustered" in st.session_state:
+                    df = st.session_state.df_clustered
+                    unique_clusters = sorted(df["cluster"].unique())
+
+                    st.subheader("Review Clusters and Assign Rules")
+                    cluster_rules = {}
+                    for cluster_id in unique_clusters:
+                        st.write(f"**Cluster {cluster_id}:**")
+                        # Display sample images and titles
+                        sample_data = df[df["cluster"] == cluster_id].head(2)
+                        for _, row in sample_data.iterrows():
+                            try:
+                                col1, col2 = st.columns([1, 2])  # Adjust proportions as needed
+                                image = Image.open(
+                                    io.BytesIO(
+                                        st.session_state.requests.get(
+                                            row["IMAGE_URL"], stream=True
+                                        ).content
+                                    )
+                                )
+                                col1.image(image, width=150)
+                                col2.write(f"**Title:** {row['TITLE']}")
+                            except Exception as e:
+                                st.warning(f"Could not display image/title: {e}")
+
+                        # Rule selection
+                        rule_options = ["Unclassified"] + rules_df["Rule"].tolist()
+                        selected_rule = st.selectbox(
+                            f"Rule for Cluster {cluster_id}",
+                            rule_options,
+                            key=f"rule_{cluster_id}",
+                        )
+                        cluster_rules[cluster_id] = selected_rule
+
+                    if st.button("Apply Rules to Products"):
+                        df["manual_label"] = df.apply(
+                            lambda row: apply_rule(
+                                row["TITLE"],
+                                cluster_rules.get(row["cluster"]),
+                                rules_df,
+                            ),
+                            axis=1,
+                        )
+                        st.session_state.df_labeled = df
+
+                if "df_labeled" in st.session_state:
+                    df = st.session_state.df_labeled
+
+                    if st.checkbox("Run CLIP Classification"):
+                        label_names = sorted(df["manual_label"].unique().tolist())
+                        df["clip_label"] = classify_images_with_clip(
+                            df, clip_model, preprocess, label_names
+                        )
+                        st.session_state.df_classified = df
+
+                    st.subheader("Classification Results")
+                    st.dataframe(df.head(20))
+
+                    import tempfile
+
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=".csv"
+                    ) as tmp_file:
+                        df.to_csv(tmp_file.name, index=False)
+                        st.download_button(
+                            "Download Classified CSV",
+                            tmp_file.name,
+                            file_name="classified_products.csv",
+                        )
+
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
