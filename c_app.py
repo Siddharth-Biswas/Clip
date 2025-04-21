@@ -20,7 +20,7 @@ sentence_model, clip_model, preprocess = load_models()
 
 def cluster_titles(titles, n_clusters=10):
     embeddings = sentence_model.encode(titles, show_progress_bar=True)
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10) # Added n_init for stability
     labels = kmeans.fit_predict(embeddings)
     return labels, kmeans
 
@@ -33,7 +33,7 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names):
     text_tokens = clip.tokenize(label_names).to(device)
 
     with st.spinner("Classifying images with CLIP..."):
-        for _, row in df.iterrows():
+        for index, row in df.iterrows():
             try:
                 image = Image.open(row["image_path"]).convert("RGB")
                 image_input = preprocess(image).unsqueeze(0).to(device)
@@ -50,8 +50,9 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names):
             except Exception as e:
                 predicted_label = f"Error: {e}"
             results.append(predicted_label)
-
     return results
+
+st.info("Upload your product data in CSV or XLSX format with 'title' and 'image_path' columns.")
 
 uploaded_file = st.file_uploader("Upload product data (.csv or .xlsx)", type=["csv", "xlsx"])
 
@@ -64,39 +65,56 @@ if uploaded_file:
     else:
         n_clusters = st.slider("Number of clusters", min_value=2, max_value=20, value=10)
 
-        if "df_clustered" not in st.session_state and st.button("Run Clustering"):
+        if "df_clustered" not in st.session_state and st.button("Run Title Clustering"):
             with st.spinner("Clustering product titles..."):
-                labels, _ = cluster_titles(df["title"].tolist(), n_clusters)
+                labels, kmeans_model = cluster_titles(df["title"].tolist(), n_clusters)
                 df["cluster"] = labels
-                st.session_state.df_clustered = df  # Save to session
+                st.session_state.df_clustered = df
+                st.session_state.kmeans_model = kmeans_model # Save the model if you want to inspect clusters
 
-# If clustering was done
-if "df_clustered" in st.session_state:
-    df = st.session_state.df_clustered
+        if "df_clustered" in st.session_state:
+            df = st.session_state.df_clustered
 
-    mapping_file = st.file_uploader("Upload rules file to rename clusters (CSV with columns: cluster,label)", type=["csv"])
-    
-    if mapping_file:
-        try:
-            rules_df = pd.read_csv(mapping_file)
-            cluster_to_label = dict(zip(rules_df["cluster"], rules_df["label"]))
-            df["label"] = df["cluster"].map(cluster_to_label).fillna(df["cluster"])
-            st.session_state.df_labeled = df
-            st.success("Applied label mapping from rules file.")
-        except Exception as e:
-            st.warning(f"Error processing rules file: {e}")
-            df["label"] = df["cluster"]
-    else:
-        df["label"] = df["cluster"]
-        st.info("No rules file uploaded. Using cluster numbers as labels.")
+            st.subheader("Initial Clusters")
+            cluster_counts = df["cluster"].value_counts().sort_index()
+            st.write(f"Number of clusters: {len(cluster_counts)}")
+            for cluster_id in sorted(df["cluster"].unique()):
+                st.write(f"**Cluster {cluster_id}:**")
+                st.write(df[df["cluster"] == cluster_id]["title"].head().tolist()) # Show a few titles per cluster
 
-    if st.button("Classify Images"):
-        label_names = sorted(df["label"].astype(str).unique().tolist())
-        df["image_label"] = classify_images_with_clip(df, clip_model, preprocess, label_names)
-        st.success("Image classification complete.")
+            st.markdown("---")
+            st.subheader("Optional: Rename Clusters using a Rules File")
+            st.markdown("Upload a CSV file with columns 'cluster' (integer cluster ID) and 'label' (desired new label).")
+            st.markdown("Example rules file: `cluster,label`\\n`0,Electronics`\\n`1,Apparel`")
+            mapping_file = st.file_uploader("Upload rules file (CSV)", type=["csv"])
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_file:
-            df.to_csv(tmp_file.name, index=False)
-            st.download_button("Download Classified CSV", tmp_file.name, file_name="classified_products.csv")
+            if mapping_file:
+                try:
+                    rules_df = pd.read_csv(mapping_file)
+                    if "cluster" not in rules_df.columns or "label" not in rules_df.columns:
+                        st.error("Rules file must contain 'cluster' and 'label' columns.")
+                    else:
+                        cluster_to_label = dict(zip(rules_df["cluster"], rules_df["label"]))
+                        df["mapped_label"] = df["cluster"].map(cluster_to_label).fillna(df["cluster"].astype(str))
+                        st.session_state.df_labeled = df
+                        st.success("Applied label mapping from rules file.")
+                except Exception as e:
+                    st.warning(f"Error processing rules file: {e}")
+                    df["mapped_label"] = df["cluster"].astype(str)
+            else:
+                df["mapped_label"] = df["cluster"].astype(str)
+                st.info("No rules file uploaded. Using cluster numbers as labels.")
 
-        st.dataframe(df.head(20))
+            if st.button("Classify Images"):
+                label_names = sorted(df["mapped_label"].unique().tolist())
+                df["clip_label"] = classify_images_with_clip(df, clip_model, preprocess, label_names)
+                st.session_state.df_classified = df
+                st.success("Image classification complete.")
+
+            if "df_classified" in st.session_state:
+                st.subheader("Classification Results")
+                st.dataframe(st.session_state.df_classified.head(20))
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_file:
+                    st.session_state.df_classified.to_csv(tmp_file.name, index=False)
+                    st.download_button("Download Classified CSV", tmp_file.name, file_name="classified_products.csv")
