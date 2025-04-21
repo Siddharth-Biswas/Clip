@@ -10,3 +10,4 @@ Pillow==10.3.0
 requests==2.31.0
 clip-anytorch==2.5.0
 numpy==1.26.4
+matplotlib>=3.5.0  # Added for the elbow plot, specifying a minimum version
