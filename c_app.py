@@ -52,8 +52,13 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names):
 
     with st.spinner("Classifying images with CLIP..."):
         for index, row in df.iterrows():
+            url = row.get("IMAGE_URL")
+            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                results.append("Error: Invalid or missing URL")
+                continue
+
             try:
-                image = load_image(row["IMAGE_URL"])
+                image = load_image(url)
                 if image is None:
                     results.append("Error: Could not load image")
                     continue
@@ -190,8 +195,10 @@ if uploaded_file and rules_file:
 
                     if st.checkbox("Run CLIP Classification"):
                         label_names = sorted(df["manual_label"].unique().tolist())
-                        df["clip_label"] = classify_images_with_clip(
-                            df, clip_model, preprocess, label_names
+                        # Filter out rows with invalid URLs before classification
+                        df_valid = df[df["IMAGE_URL"].notna() & df["IMAGE_URL"].str.startswith(("http://", "https://"))]
+                        df_valid["clip_label"] = classify_images_with_clip(
+                            df_valid, clip_model, preprocess, label_names
                         )
                         st.session_state.df_classified = df
 
