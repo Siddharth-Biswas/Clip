@@ -6,6 +6,7 @@ from PIL import Image
 from sklearn.cluster import KMeans
 from sentence_transformers import SentenceTransformer
 import tempfile
+import io  # For handling image URLs
 
 st.set_page_config(layout="wide")
 st.title("Product Classifier using CLIP and Title Clustering")
@@ -35,7 +36,17 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names):
     with st.spinner("Classifying images with CLIP..."):
         for index, row in df.iterrows():
             try:
-                image = Image.open(row["image_path"]).convert("RGB")
+                image_url = row["IMAGE_URL"]
+                # Try to open image from URL
+                try:
+                    response = st.session_state.requests.get(image_url, stream=True)
+                    response.raise_for_status()
+                    image = Image.open(io.BytesIO(response.content)).convert("RGB")
+                except Exception as e:
+                    st.warning(f"Error loading image from URL '{image_url}': {e}")
+                    results.append(f"Error: Could not load image from URL")
+                    continue
+
                 image_input = preprocess(image).unsqueeze(0).to(device)
 
                 with torch.no_grad():
@@ -52,7 +63,7 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names):
             results.append(predicted_label)
     return results
 
-st.info("Upload your product data in CSV or XLSX format with 'title' and 'image_path' columns.")
+st.info("Upload your product data in CSV or XLSX format with 'TITLE' and 'IMAGE_URL' columns.")
 
 uploaded_file = st.file_uploader("Upload product data (.csv or .xlsx)", type=["csv", "xlsx"])
 
@@ -60,14 +71,14 @@ if uploaded_file:
     # Load DataFrame
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
 
-    if "title" not in df.columns or "image_path" not in df.columns:
-        st.error("CSV/XLSX must contain 'title' and 'image_path' columns.")
+    if "TITLE" not in df.columns or "IMAGE_URL" not in df.columns:
+        st.error("CSV/XLSX must contain 'TITLE' and 'IMAGE_URL' columns.")
     else:
         n_clusters = st.slider("Number of clusters", min_value=2, max_value=20, value=10)
 
         if "df_clustered" not in st.session_state and st.button("Run Title Clustering"):
             with st.spinner("Clustering product titles..."):
-                labels, kmeans_model = cluster_titles(df["title"].tolist(), n_clusters)
+                labels, kmeans_model = cluster_titles(df["TITLE"].tolist(), n_clusters)
                 df["cluster"] = labels
                 st.session_state.df_clustered = df
                 st.session_state.kmeans_model = kmeans_model # Save the model if you want to inspect clusters
@@ -80,7 +91,7 @@ if uploaded_file:
             st.write(f"Number of clusters: {len(cluster_counts)}")
             for cluster_id in sorted(df["cluster"].unique()):
                 st.write(f"**Cluster {cluster_id}:**")
-                st.write(df[df["cluster"] == cluster_id]["title"].head().tolist()) # Show a few titles per cluster
+                st.write(df[df["cluster"] == cluster_id]["TITLE"].head().tolist()) # Show a few titles per cluster
 
             st.markdown("---")
             st.subheader("Optional: Rename Clusters using a Rules File")
@@ -106,6 +117,11 @@ if uploaded_file:
                 st.info("No rules file uploaded. Using cluster numbers as labels.")
 
             if st.button("Classify Images"):
+                # Initialize requests in session state if it's not already there
+                if "requests" not in st.session_state:
+                    import requests
+                    st.session_state["requests"] = requests
+
                 label_names = sorted(df["mapped_label"].unique().tolist())
                 df["clip_label"] = classify_images_with_clip(df, clip_model, preprocess, label_names)
                 st.session_state.df_classified = df
