@@ -69,7 +69,7 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names, image_url
         if not isinstance(url, str) or not url.startswith(("http://", "https://")):
             results.append("Error: Invalid or missing URL")
             elapsed_time = int(time.time() - start_time)
-            progress = (index + 1) / num_images
+            progress = min(1.0, (index + 1) / num_images)  # Ensure progress doesn't exceed 1.0
             remaining_time = (elapsed_time / progress) * (1 - progress) if progress > 0 else 0
             progress_bar.progress(progress, f"Classifying images with CLIP... Time: {elapsed_time}s | Estimated Time Remaining: {int(remaining_time)}s")
             continue
@@ -79,7 +79,7 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names, image_url
             if image is None:
                 results.append("Error: Could not load image")
                 elapsed_time = int(time.time() - start_time)
-                progress = (index + 1) / num_images
+                progress = min(1.0, (index + 1) / num_images)  # Ensure progress doesn't exceed 1.0
                 remaining_time = (elapsed_time / progress) * (1 - progress) if progress > 0 else 0
                 progress_bar.progress(progress, f"Classifying images with CLIP... Time: {elapsed_time}s | Estimated Time Remaining: {int(remaining_time)}s")
                 continue
@@ -105,7 +105,7 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names, image_url
             results.append(f"Error: {e}")
 
         elapsed_time = int(time.time() - start_time)
-        progress = (index + 1) / num_images
+        progress = min(1.0, (index + 1) / num_images)  # Ensure progress doesn't exceed 1.0
         remaining_time = (elapsed_time / progress) * (1 - progress) if progress > 0 else 0
         progress_bar.progress(progress, f"Classifying images with CLIP... Time: {elapsed_time}s | Estimated Time Remaining: {int(remaining_time)}s")
 
