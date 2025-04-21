@@ -43,7 +43,7 @@ def load_image(url):
         return None
 
 
-def classify_images_with_clip(df, clip_model, preprocess, label_names):
+def classify_images_with_clip(df, clip_model, preprocess, label_names, image_url_col):
     device = "cpu"
     clip_model.eval()
     results = []
@@ -52,7 +52,7 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names):
 
     with st.spinner("Classifying images with CLIP..."):
         for index, row in df.iterrows():
-            url = row.get("IMAGE_URL")
+            url = row.get(image_url_col)
             if not isinstance(url, str) or not url.startswith(("http://", "https://")):
                 results.append("Error: Invalid or missing URL")
                 continue
@@ -142,14 +142,19 @@ if uploaded_file and rules_file:
         rules_df = load_rules(rules_file)
 
         if rules_df is not None:
-            if "TITLE" not in df.columns or "IMAGE_URL" not in df.columns:
-                st.error("Data must contain TITLE and IMAGE_URL columns.")
+            title_col = "TITLE"
+            image_url_columns = [col for col in df.columns if "IMAGE_URL" in col.upper()]
+
+            if not title_col in df.columns or not image_url_columns:
+                st.error("Data must contain a TITLE column and a column containing 'IMAGE_URL' in its name.")
             else:
+                image_url_col = image_url_columns[0]  # Use the first matching column
+
                 n_clusters = st.slider("Number of clusters", min_value=2, max_value=20, value=10)
 
                 if "df_clustered" not in st.session_state and st.button("Run Title Clustering"):
                     with st.spinner("Clustering product titles..."):
-                        labels, kmeans_model = cluster_titles(df["TITLE"].tolist(), n_clusters)
+                        labels, kmeans_model = cluster_titles(df[title_col].tolist(), n_clusters)
                         df["cluster"] = labels
                         st.session_state.df_clustered = df
                         st.session_state.kmeans_model = kmeans_model
@@ -166,10 +171,10 @@ if uploaded_file and rules_file:
                         for _, row in sample_data.iterrows():
                             try:
                                 col1, col2 = st.columns([1, 2])
-                                image = load_image(row["IMAGE_URL"])
+                                image = load_image(row[image_url_col])
                                 if image:
                                     col1.image(image, width=150)
-                                col2.write(f"**Title:** {row['TITLE']}")
+                                col2.write(f"**Title:** {row[title_col]}")
                             except Exception as e:
                                 st.warning(f"Could not display image/title: {e}")
 
@@ -184,7 +189,7 @@ if uploaded_file and rules_file:
                     if st.button("Apply Rules to Products"):
                         df["manual_label"] = df.apply(
                             lambda row: apply_rule(
-                                row["TITLE"], cluster_rules.get(row["cluster"]), rules_df
+                                row[title_col], cluster_rules.get(row["cluster"]), rules_df
                             ),
                             axis=1,
                         )
@@ -196,10 +201,12 @@ if uploaded_file and rules_file:
                     if st.checkbox("Run CLIP Classification"):
                         label_names = sorted(df["manual_label"].unique().tolist())
                         # Filter out rows with invalid URLs before classification
-                        df_valid = df[df["IMAGE_URL"].notna() & df["IMAGE_URL"].str.startswith(("http://", "https://"))]
+                        df_valid = df[df[image_url_col].notna() & df[image_url_col].str.startswith(("http://", "https://"))].copy()
                         df_valid["clip_label"] = classify_images_with_clip(
-                            df_valid, clip_model, preprocess, label_names
+                            df_valid, clip_model, preprocess, label_names, image_url_col
                         )
+                        # Merge CLIP labels back into the original DataFrame
+                        df = pd.merge(df, df_valid[["clip_label"]], left_index=True, right_index=True, how="left")
                         st.session_state.df_classified = df
 
                     st.subheader("Classification Results")
