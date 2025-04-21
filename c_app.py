@@ -10,6 +10,8 @@ import requests
 import tempfile
 import numpy as np
 import gc
+import time
+import matplotlib.pyplot as plt
 
 st.set_page_config(layout="wide")
 st.title("Product Classifier")
@@ -25,11 +27,21 @@ def load_models():
 sentence_model, clip_model, preprocess = load_models()
 
 
-def cluster_titles(titles, n_clusters=10):
-    embeddings = sentence_model.encode(titles, show_progress_bar=True)
+def cluster_titles(titles, n_clusters):
+    embeddings = sentence_model.encode(titles)
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     labels = kmeans.fit_predict(embeddings)
     return labels, kmeans
+
+
+def calculate_wcss(titles, max_clusters=20):
+    embeddings = sentence_model.encode(titles)
+    wcss = []
+    for i in range(1, max_clusters + 1):
+        kmeans = KMeans(n_clusters=i, random_state=42, n_init=10)
+        kmeans.fit(embeddings)
+        wcss.append(kmeans.inertia_)
+    return wcss
 
 
 def load_image(url):
@@ -47,41 +59,57 @@ def classify_images_with_clip(df, clip_model, preprocess, label_names, image_url
     device = "cpu"
     clip_model.eval()
     results = []
-
+    num_images = len(df)
+    start_time = time.time()
+    progress_bar = st.progress(0.0, f"Classifying images with CLIP... Time: 0s | Estimated Time Remaining: Calculating...")
     text_tokens = clip.tokenize(label_names).to(device)
 
-    with st.spinner("Classifying images with CLIP..."):
-        for index, row in df.iterrows():
-            url = row.get(image_url_col)
-            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-                results.append("Error: Invalid or missing URL")
+    for index, row in df.iterrows():
+        url = row.get(image_url_col)
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            results.append("Error: Invalid or missing URL")
+            elapsed_time = int(time.time() - start_time)
+            progress = (index + 1) / num_images
+            remaining_time = (elapsed_time / progress) * (1 - progress) if progress > 0 else 0
+            progress_bar.progress(progress, f"Classifying images with CLIP... Time: {elapsed_time}s | Estimated Time Remaining: {int(remaining_time)}s")
+            continue
+
+        try:
+            image = load_image(url)
+            if image is None:
+                results.append("Error: Could not load image")
+                elapsed_time = int(time.time() - start_time)
+                progress = (index + 1) / num_images
+                remaining_time = (elapsed_time / progress) * (1 - progress) if progress > 0 else 0
+                progress_bar.progress(progress, f"Classifying images with CLIP... Time: {elapsed_time}s | Estimated Time Remaining: {int(remaining_time)}s")
                 continue
 
-            try:
-                image = load_image(url)
-                if image is None:
-                    results.append("Error: Could not load image")
-                    continue
+            image_input = preprocess(image).unsqueeze(0).to(device)
 
-                image_input = preprocess(image).unsqueeze(0).to(device)
+            with torch.no_grad():
+                image_features = clip_model.encode_image(image_input)
+                text_features = clip_model.encode_text(text_tokens)
 
-                with torch.no_grad():
-                    image_features = clip_model.encode_image(image_input)
-                    text_features = clip_model.encode_text(text_tokens)
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            text_features /= text_features.norm(dim=-1, keepdim=True)
 
-                image_features /= image_features.norm(dim=-1, keepdim=True)
-                text_features /= text_features.norm(dim=-1, keepdim=True)
+            similarity = (
+                100.0 * image_features @ text_features.T
+            ).squeeze(0).cpu().numpy()
 
-                similarity = (
-                    100.0 * image_features @ text_features.T
-                ).squeeze(0).cpu().numpy()
+            predicted_label = label_names[similarity.argmax()]
+            confidence = round(similarity.max(), 2)
+            results.append(f"{predicted_label} ({confidence}%)")
 
-                predicted_label = label_names[similarity.argmax()]
-                confidence = round(similarity.max(), 2)
-                results.append(f"{predicted_label} ({confidence}%)")
+        except Exception as e:
+            results.append(f"Error: {e}")
 
-            except Exception as e:
-                results.append(f"Error: {e}")
+        elapsed_time = int(time.time() - start_time)
+        progress = (index + 1) / num_images
+        remaining_time = (elapsed_time / progress) * (1 - progress) if progress > 0 else 0
+        progress_bar.progress(progress, f"Classifying images with CLIP... Time: {elapsed_time}s | Estimated Time Remaining: {int(remaining_time)}s")
+
+    progress_bar.empty()
     gc.collect()
     return results
 
@@ -124,7 +152,7 @@ def apply_rule(title, rule, rules_df):
     exclude_match = any(kw in title_lower for kw in exclude_keywords)
 
     if include_match and not exclude_match:
-        return str(rule_row["Rule"])  # Changed this line
+        return str(rule_row["Rule"])
     else:
         return "Unclassified"
 
@@ -148,9 +176,22 @@ if uploaded_file and rules_file:
             if not title_col in df.columns or not image_url_columns:
                 st.error("Data must contain a TITLE column and a column containing 'IMAGE_URL' in its name.")
             else:
-                image_url_col = image_url_columns[0]  # Use the first matching column
+                image_url_col = image_url_columns[0]
 
                 n_clusters = st.slider("Number of clusters", min_value=2, max_value=20, value=10)
+
+                if st.button("Generate Elbow Plot"):
+                    with st.spinner("Calculating WCSS for Elbow Method..."):
+                        titles = df[title_col].tolist()
+                        max_k = 20
+                        wcss = calculate_wcss(titles, max_k)
+                        fig, ax = plt.subplots()
+                        ax.plot(range(1, max_k + 1), wcss, marker='o')
+                        ax.set_title('Elbow Method')
+                        ax.set_xlabel('Number of Clusters')
+                        ax.set_ylabel('Within-Cluster Sum of Squares (WCSS)')
+                        st.pyplot(fig)
+                    st.info("Look for the 'elbow' in the plot. Adjust the 'Number of clusters' slider based on the elbow and then run title clustering.")
 
                 if "df_clustered" not in st.session_state and st.button("Run Title Clustering"):
                     with st.spinner("Clustering product titles..."):
@@ -158,6 +199,7 @@ if uploaded_file and rules_file:
                         df["cluster"] = labels
                         st.session_state.df_clustered = df
                         st.session_state.kmeans_model = kmeans_model
+                    st.success("Product title clustering complete!")
 
                 if "df_clustered" in st.session_state:
                     df = st.session_state.df_clustered
@@ -187,27 +229,28 @@ if uploaded_file and rules_file:
                         cluster_rules[cluster_id] = selected_rule
 
                     if st.button("Apply Rules to Products"):
-                        df["manual_label"] = df.apply(
-                            lambda row: apply_rule(
-                                row[title_col], cluster_rules.get(row["cluster"]), rules_df
-                            ),
-                            axis=1,
-                        )
-                        st.session_state.df_labeled = df
+                        with st.spinner("Applying rules..."):
+                            df["manual_label"] = df.apply(
+                                lambda row: apply_rule(
+                                    row[title_col], cluster_rules.get(row["cluster"]), rules_df
+                                ),
+                                axis=1,
+                            )
+                            st.session_state.df_labeled = df
+                        st.success("Rules applied to products!")
 
                 if "df_labeled" in st.session_state:
                     df = st.session_state.df_labeled
 
                     if st.checkbox("Run CLIP Classification"):
                         label_names = sorted(df["manual_label"].unique().tolist())
-                        # Filter out rows with invalid URLs before classification
                         df_valid = df[df[image_url_col].notna() & df[image_url_col].str.startswith(("http://", "https://"))].copy()
                         df_valid["clip_label"] = classify_images_with_clip(
                             df_valid, clip_model, preprocess, label_names, image_url_col
                         )
-                        # Merge CLIP labels back into the original DataFrame
                         df = pd.merge(df, df_valid[["clip_label"]], left_index=True, right_index=True, how="left")
                         st.session_state.df_classified = df
+                        st.success("CLIP image classification complete!")
 
                     st.subheader("Classification Results")
                     st.dataframe(df.head(20))
