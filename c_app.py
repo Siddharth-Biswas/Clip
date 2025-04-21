@@ -100,30 +100,28 @@ def apply_rule(title, rule, rules_df):
 
     rule_row = rules_df[rules_df["Rule"] == rule].iloc[0]
 
-    include_keywords = (
-        str(rule_row["Include"]).lower().split(" or ")
-        if pd.notna(rule_row["Include"])
-        else []
-    )
-    exclude_keywords = (
-        str(rule_row["Exclude"]).lower().split(" and ")
-        if pd.notna(rule_row["Exclude"])
-        else []
-    )
+    include_text = str(rule_row["Include"]).lower() if pd.notna(rule_row["Include"]) else ""
+    exclude_text = str(rule_row["Exclude"]).lower() if pd.notna(rule_row["Exclude"]) else ""
 
     title_lower = title.lower()
-    include_match = all(
-        keyword.strip() in title_lower for keyword in include_keywords if keyword.strip()
-    )
-    exclude_match = not any(
-        keyword.strip() in title_lower for keyword in exclude_keywords if keyword.strip()
-    )
 
-    if include_match and exclude_match:
+    # Include logic: handles "A and B or C"
+    include_clauses = [clause.strip() for clause in include_text.split(" or ") if clause.strip()]
+    include_match = False
+    for clause in include_clauses:
+        and_keywords = [kw.strip() for kw in clause.split(" and ") if kw.strip()]
+        if all(kw in title_lower for kw in and_keywords):
+            include_match = True
+            break
+
+    # Exclude logic: treat all keywords (even with 'and') as OR
+    exclude_keywords = [kw.strip() for kw in exclude_text.replace(" and ", " or ").split(" or ") if kw.strip()]
+    exclude_match = any(kw in title_lower for kw in exclude_keywords)
+
+    if include_match and not exclude_match:
         return str(rule_row["Node"])
     else:
         return "Unclassified"
-
 
 # Streamlit App
 uploaded_file = st.file_uploader("Upload product data (.csv or .xlsx)", type=["csv", "xlsx"])
