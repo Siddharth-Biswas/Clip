@@ -119,7 +119,7 @@ def apply_rule(title, rule, rules_df):
     exclude_match = any(kw in title_lower for kw in exclude_keywords)
 
     if include_match and not exclude_match:
-        return str(rule_row["Node"])
+        return str(rule_row["Rule"])  # Changed this line
     else:
         return "Unclassified"
 
